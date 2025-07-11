@@ -15,6 +15,8 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pygmt
 import warnings
+from pyproj import Geod
+
 warnings.simplefilter("ignore")
 
 # === Configuration ===
@@ -22,17 +24,17 @@ NETWORK = "IU"
 STATION = "ANMO"
 CHANNEL = "BHZ"
 LOCATION = "00"
-DATE = "2025-07-01"
-MIN_MAG = 2.0
+DATE = "2019-07-06"
+MIN_MAG = 3.0
 LAT_CEN, LON_CEN = 30.0, -100.0
 MAXRADIUS = 50
-LAT_RANGE = (30.0, 40.0)
+LAT_RANGE = (32.0, 40.0)
 LON_RANGE = (-110.0, -100.0)
 Z_RANGE = (0.0, 3.0)
 MODEL = "iasp91"
 # INVERSION_METHOD = "grid+mcmc"  # or "gradient"
 INVERSION_METHOD = "gradient"
-num_iter = 20
+num_iter = 10
 N_WORKERS = 8
 WAVEFORM_FILE = "cached_waveform.mseed"
 RESPONSE_FILE = "cached_response.xml"
@@ -46,13 +48,14 @@ N_Z_COURSE = 4
 # === Arrival Picker Configuration ===
 PICK_METHOD = "hilbert"
 # PICK_METHOD = "stalta"
-FILTER = (0.5, 5.0)
+# PICK_METHOD = "random"
+FILTER = (1.0, 5.0)
 STA = 1.0
 LTA = 10.0
-TRIGGER_ON = 3.5
+TRIGGER_ON = 3.0
 TRIGGER_OFF = 0.5
-pick_before = -5
-pick_after = 15
+pick_before = 0
+pick_after = 0
 
 # === Load waveform and response ===
 t0 = UTCDateTime(DATE)
@@ -101,28 +104,81 @@ cat = client.get_events(starttime=t0, endtime=t1, minmagnitude=MIN_MAG,
 
 event_lats, event_lons, event_depths, origin_times, observed_arrivals = [], [], [], [], []
 
-def process_event(event):
+# Search grid for max/min distance from event
+
+minlat, maxlat = LAT_RANGE
+minlon, maxlon = LON_RANGE
+
+# Grid resolution, degrees
+dlat = 0.1
+dlon = 0.1
+
+# Generate grid of lat/lon points
+lats = np.arange(minlat, maxlat + dlat, dlat)
+lons = np.arange(minlon, maxlon + dlon, dlon)
+lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+# Flatten the grid for iteration
+flat_lats = lat_grid.ravel()
+flat_lons = lon_grid.ravel()
+
+# Vectorized geodesic distance computation
+geod = Geod(ellps="WGS84")
+evt_idx = 0
+
+def process_event(event, evt_idx):
     try:
         origin = event.preferred_origin() or event.origins[0]
         magnitude = event.preferred_magnitude() or event.magnitudes[0]
         ev_lat, ev_lon, ev_depth = origin.latitude, origin.longitude, origin.depth / 1000
         origin_time = origin.time
+        
+        geod = Geod(ellps="WGS84")
+        # Find closest and furthest points in search grid for arrival time bounds
+        az12, az21, distances = geod.inv(
+            np.full_like(flat_lons, ev_lon),  # longitudes from point
+            np.full_like(flat_lats, ev_lat),  # latitudes from point
+            flat_lons,                      # destination longitudes
+            flat_lats                       # destination latitudes
+        )
+        
+        # Find closest and furthest
+        closest_idx = np.argmin(distances)
+        furthest_idx = np.argmax(distances)
 
-        dist_deg = locations2degrees(ev_lat, ev_lon, inv[0][0].latitude, inv[0][0].longitude)
-        arrivals = model.get_travel_times(source_depth_in_km=ev_depth, distance_in_degree=dist_deg, phase_list=["P"])
-        if not arrivals:
+        dist_deg_close = locations2degrees(ev_lat, ev_lon, flat_lats[closest_idx], flat_lons[closest_idx])
+        dist_deg_far = locations2degrees(ev_lat, ev_lon, flat_lats[furthest_idx], flat_lons[furthest_idx])
+        arrivals_close = model.get_travel_times(source_depth_in_km=ev_depth, distance_in_degree=dist_deg_close, phase_list=["P"])
+        arrivals_far = model.get_travel_times(source_depth_in_km=ev_depth, distance_in_degree=dist_deg_far, phase_list=["P"])        
+        
+        if not arrivals_close:
+            # print(f"[Warning] No arrivals close found for {evt_idx}")
+            # return None
+            t_pred_start = origin_time
+        elif arrivals_close:
+            t_pred_start = origin_time + arrivals_close[0].time
+        
+        if not arrivals_far:
+            print(f"[Warning] No arrivals far found for {evt_idx}")
             return None
-        arrival = arrivals[0]
-        t_pred = origin_time + arrival.time
-        st_win = tr.copy().trim(starttime=t_pred - pick_before, endtime=t_pred + pick_after)
+
+        t_pred_end  = origin_time + arrivals_far[0].time        
+        
+        st_win = tr.copy().trim(starttime=t_pred_start - pick_before, endtime=t_pred_end + pick_after)
+        
         if len(st_win.data) < 10:
+            print(f"[Warning] Data too short for {evt_idx}")
             return None
+        
         if PICK_METHOD == "stalta":
             st_win.filter("bandpass", freqmin=FILTER[0], freqmax=FILTER[1], corners=4, zerophase=True)
 
         if PICK_METHOD == "hilbert":
             abs_env = np.abs(hilbert(st_win.data))
             peak_idx = np.argmax(abs_env)
+            if not peak_idx:
+                print(f"[Warning] No peak found for {evt_idx}")
+                return None
             t_obs = st_win.stats.starttime + peak_idx / st_win.stats.sampling_rate
 
         elif PICK_METHOD == "stalta":
@@ -131,32 +187,50 @@ def process_event(event):
             cft = classic_sta_lta(st_win.data, nsta, nlta)
             on_off = trigger_onset(cft, TRIGGER_ON, TRIGGER_OFF)
             if len(on_off) == 0:
+                print(f"[Warning] No trigger found for {evt_idx}")  
                 return None
             trigger_sample = on_off[0][0]
             t_obs = st_win.stats.starttime + trigger_sample / st_win.stats.sampling_rate
+
+        elif PICK_METHOD == "random":
+            t_obs = np.random.uniform(st_win.stats.starttime, st_win.stats.endtime)
+
         else:
+            print("Invalid PICK_METHOD")
             return None
-        # times = np.linspace(-5, 15, len(st_win.data))
-        # plt.figure(figsize=(10, 4))
-        # plt.plot(times, st_win.data, label="Velocity", color="black", lw=0.8)
-        # if PICK_METHOD == "hilbert":
-        #     plt.plot(times, abs_env, label="Envelope", color="gray", lw=0.8)
-        # plt.axvline((t_pred - st_win.stats.starttime), color='red', ls='--', label='Predicted P')
-        # plt.axvline((t_obs - st_win.stats.starttime), color='blue', ls='--', label='Picked P')
-        # plt.title(f"{PICK_METHOD.upper()} pick: {origin_time.date} {origin_time.time:.2f} | M={magnitude.mag:.1f}")
-        # plt.xlabel("Time (s since window start)")
-        # plt.ylabel("Amplitude")
-        # plt.legend(loc="upper right", fontsize=8)
-        # plt.tight_layout()
-        # plt.savefig(f"picks/pick_{origin_time.strftime('%Y%m%d_%H%M%S')}.png")
-        # plt.close()
+       
+        dist_deg = locations2degrees(ev_lat, ev_lon, inv[0][0].latitude, inv[0][0].longitude)
+        arrivals = model.get_travel_times(source_depth_in_km=ev_depth, distance_in_degree=dist_deg, phase_list=["P"])
+        if not arrivals:
+            print(f"[Warning] No arrivals found for {evt_idx}")
+            return None
+        t_pred = origin_time + arrivals[0].time
+
+        # Plot and save waveform with pick and prediction
+        try:
+            fig, ax = plt.subplots(figsize=(8, 3))
+            times = np.linspace(0, st_win.stats.npts / st_win.stats.sampling_rate, st_win.stats.npts)
+            ax.plot(times, st_win.data, label="Waveform")
+            ax.axvline((t_obs - st_win.stats.starttime), color="r", linestyle="--", label="Pick")
+            ax.axvline((t_pred - st_win.stats.starttime), color="g", linestyle=":", label="Predicted")
+            ax.set_title(f"Event {evt_idx}: M={magnitude.mag:.1f}, Pick Method = {PICK_METHOD}")
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Amplitude")
+            ax.legend()
+            plt.tight_layout()
+            os.makedirs("picks/waveform_plots", exist_ok=True)
+            fig.savefig(f"picks/waveform_plots/event_{evt_idx:03d}.png")
+            plt.close(fig)
+        except Exception as e:
+            print(f"[Warning] Plotting failed for event {evt_idx}: {e}")
 
         return (ev_lat, ev_lon, ev_depth, origin_time, t_obs)
     except:
+        print(f"[Error] Processing failed for event {evt_idx}")
         return None
 
 with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
-    futures = [executor.submit(process_event, evt) for evt in cat]
+    futures = [executor.submit(process_event, evt, idx) for idx, evt in enumerate(cat)]
     for f in tqdm(as_completed(futures), total=len(cat), desc="Picking arrivals"):
         result = f.result()
         if result:
@@ -167,38 +241,6 @@ with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
             origin_times.append(origin_time)
             observed_arrivals.append(t_obs)
 
-# === Save arrival picks ===
-print("Saving individual picks...")
-with open("picks/arrival_times.txt", "w") as f:
-    f.write("# Event_Lat  Event_Lon  Depth_km  OriginTime  ArrivalTime  Method\n")
-    for ev_lat, ev_lon, ev_depth, t0_evt, t_obs in zip(event_lats, event_lons, event_depths, origin_times, observed_arrivals):
-        f.write(f"{ev_lat:.3f}  {ev_lon:.3f}  {ev_depth:.2f}  {t0_evt.isoformat()}  {t_obs.isoformat()}  {PICK_METHOD}\n")
-
-# === Save waveform plots for each pick ===
-print("Saving waveform plots...")
-os.makedirs("picks/waveform_plots", exist_ok=True)
-for idx, (ev_lat, ev_lon, ev_depth, t0_evt, t_obs) in enumerate(zip(event_lats, event_lons, event_depths, origin_times, observed_arrivals)):
-    dist_deg = locations2degrees(ev_lat, ev_lon, inv[0][0].latitude, inv[0][0].longitude)
-    arrivals = model.get_travel_times(source_depth_in_km=ev_depth, distance_in_degree=dist_deg, phase_list=["P"])
-    if not arrivals:
-        continue
-    t_pred = t0_evt + arrivals[0].time
-    st_win = tr.copy().trim(starttime=t_pred - 5, endtime=t_pred + 15)
-    if len(st_win.data) < 10:
-        continue
-
-    fig, ax = plt.subplots(figsize=(8, 3))
-    times = np.linspace(0, st_win.stats.npts / st_win.stats.sampling_rate, st_win.stats.npts)
-    ax.plot(times, st_win.data, label="Waveform")
-    ax.axvline((t_obs - st_win.stats.starttime), color="r", linestyle="--", label="Pick")
-    ax.axvline((t_pred - st_win.stats.starttime), color="g", linestyle=":", label="Predicted")
-    ax.set_title(f"Event {idx}: Pick Method = {PICK_METHOD}")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Amplitude")
-    ax.legend()
-    plt.tight_layout()
-    fig.savefig(f"picks/waveform_plots/event_{idx:03d}.png")
-    plt.close(fig)
 
 # === Misfit evaluation ===
 def compute_misfit_for_location(lat, lon, elev_km):
@@ -218,6 +260,8 @@ if INVERSION_METHOD == "gradient":
     print("Running gradient-free optimization with parallel misfit evaluations...")
 
     history = []
+    call_counter = [0]
+    pbar = tqdm(total=num_iter * 10, desc="Nelder-Mead Evaluations", dynamic_ncols=True)
 
     def objective_with_tracking(x):
         if isinstance(x[0], (list, np.ndarray)):
@@ -225,6 +269,8 @@ if INVERSION_METHOD == "gradient":
                 futures = [executor.submit(compute_misfit_for_location, *xi) for xi in x]
                 results = [f.result() for f in futures]
                 history.extend(results)
+                call_counter[0] += 1
+                pbar.update(1)
                 return np.array(results)
         else:
             misfit = compute_misfit_for_location(*x)
@@ -236,6 +282,8 @@ if INVERSION_METHOD == "gradient":
                       method="Nelder-Mead",
                       bounds=[LAT_RANGE, LON_RANGE, Z_RANGE],
                       options={"maxiter": num_iter})
+    pbar.close()
+    
     best_lat, best_lon, best_z = result.x
 
     # === Plot convergence ===
