@@ -318,8 +318,8 @@ NETWORK = "IU"
 STATION = "ANMO"
 CHANNEL = "BH?"
 LOCATION = "00"
-DATE = "2025-04-09"
-MIN_MAG = 4.0
+DATE = "2019-07-06"
+MIN_MAG = 5.0
 LAT_RANGE = (32.0, 40.0)
 LON_RANGE = (-110.0, -100.0)
 Z_RANGE   = (0.0, 3.0)
@@ -329,7 +329,7 @@ LAT_CEN = np.random.uniform(*LAT_RANGE)
 LON_CEN = np.random.uniform(*LON_RANGE)
 Z_CEN   = np.random.uniform(*Z_RANGE)
 
-MAXRADIUS = 90
+MAXRADIUS = 80
 MODEL = "ak135"
 INVERSION_METHOD = "gradient"  # or "grid+mcmc"
 num_iter = 10
@@ -339,6 +339,7 @@ RESPONSE_FILE = "cached_response.xml"
 os.makedirs("picks", exist_ok=True)
 os.makedirs("picks/waveform_plots", exist_ok=True)
 os.makedirs("picks/waveforms", exist_ok=True)
+os.makedirs("picks/polarization", exist_ok=True)
 
 # Coarse grid resolution
 N_LAT_COURSE = 6
@@ -353,7 +354,7 @@ if PICK_METHOD not in PICK_METHODS:
 else:
     print(f"Using PICK_METHOD: {PICK_METHOD}")
 
-FILTER = (0.5, 10.0)
+FILTER = (0.5, 5.0)
 STA = 1.0
 LTA = 10.0
 TRIGGER_ON = 3.0
@@ -582,153 +583,345 @@ S_arrival_times = origin_times + compute_arrival_times_parallel_futures(MODEL, d
 
 # arrivals = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg, phase_list=["P"])
 
-
 # ========================================================================== 80
-# Picking
-evt_idx = 3
+# Cut individual segments for potential picking
 
-# try:
-dist_deg_close_event = dist_deg_close[evt_idx]
-dist_deg_far_event = dist_deg_far[evt_idx]
-arrivals_close = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["P"])
-arrivals_close_P = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["P"])
-arrivals_close_s = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["S"])
+# for evt_idx in range(len(cat)):
+# # try:
+#     dist_deg_close_event = dist_deg_close[evt_idx]
+#     dist_deg_far_event = dist_deg_far[evt_idx]
+#     arrivals_close = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["P"])
+#     arrivals_close_P = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["P"])
+#     arrivals_close_S = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close[evt_idx], phase_list=["S"])
 
-arrivals_far = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["S"])
-arrivals_far_S = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["P"])
-arrivals_far_S = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["S"])
+#     arrivals_far = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["S"])
+#     arrivals_far_P = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["P"])
+#     arrivals_far_S = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far[evt_idx], phase_list=["S"])
 
-if not arrivals_close:
-    # print(f"[Warning] No arrivals close found for {evt_idx}")
-    # return None
-    t_pred_start = origin_times[evt_idx]
-elif arrivals_close:
-    t_pred_start = origin_times[evt_idx] + arrivals_close[0].time
+#     if not arrivals_close:
+#         # print(f"[Warning] No arrivals close found for {evt_idx}")
+#         # return None
+#         t_pred_start = origin_times[evt_idx]
+#     elif arrivals_close:
+#         t_pred_start = origin_times[evt_idx] + arrivals_close[0].time
 
-if not arrivals_far:
-    print(f"[Warning] No arrivals far found for {evt_idx}")
-    # return None
+#     if not arrivals_far:
+#         print(f"[Warning] No arrivals far found for {evt_idx}")
+#         # return None
 
-t_pred_end  = origin_times[evt_idx] + arrivals_far[0].time        
-    
-st_win = st.copy().trim(starttime=t_pred_start - pick_before, endtime=t_pred_end + pick_after)
-st_win.filter("bandpass", freqmin=FILTER[0], freqmax=FILTER[1], corners=4, zerophase=True)
-st_win = st_win.trim(starttime=t_pred_start - pick_before + filter_buffer, endtime=t_pred_end + pick_after)
-
-st_win.write(f"picks/waveforms/event_{evt_idx:03d}.mseed", format="MSEED")
-
-if len(st_win[0].data) < 10:
-    print(f"[Warning] Data too short for {evt_idx}")
-    # return None
-
-# if PICK_METHOD == "stalta":
+#     t_pred_end  = origin_times[evt_idx] + arrivals_far[0].time        
+        
+#     st_win = st.copy().trim(starttime=t_pred_start - pick_before, endtime=t_pred_end + pick_after)
 #     st_win.filter("bandpass", freqmin=FILTER[0], freqmax=FILTER[1], corners=4, zerophase=True)
+#     st_win = st_win.trim(starttime=t_pred_start - pick_before + filter_buffer, endtime=t_pred_end + pick_after)
+
+#     st_win.write(f"picks/waveforms/event_{evt_idx:03d}.mseed", format="MSEED")
+
+#     # ========================================================================== 80
+#     # Run polarization analysis
+#     times_paz, rect, incidence = compute_polarization_manual(st_win)
+
+#     # Grab the Z trace
+#     trZ = st_win.select(component="Z")[0]
+#     trN = st_win.select(component="1")[0]
+#     trE = st_win.select(component="2")[0]
 
 
+#     # Run the plotting function
+#     p_pick, s_pick = plot_polarization_result(
+#         trZ=trZ,
+#         trN=trN,
+#         trE=trE,
+#         times_paz=times_paz,
+#         rect=rect,
+#         incidence=incidence,
+#         rect_thresh=0.7,
+#         p_incidence_max=30,
+#         s_incidence_min=45,
+#         amp_thresh=0.01,
+#         p_pick_search_start=5.0,
+#         filename=f"picks/polarization/polarization_output_event_{evt_idx:03d}.png",
+#         show_plot=False,
+#         true_p_arrival=P_arrival_times[evt_idx],
+#         true_s_arrival=S_arrival_times[evt_idx]
+#     )
 
-if PICK_METHOD == "hilbert":
-    abs_env = np.abs(hilbert(st_win[0].data))
-    peak_idx = np.argmax(abs_env)
-    if not peak_idx:
-        print(f"[Warning] No peak found for {evt_idx}")
-        # return None
-    t_obs = st_win.stats.starttime + peak_idx / st_win.stats.sampling_rate
+def process_segment_and_polarization(evt_idx):
+    try:
+        dist_deg_close_event = dist_deg_close[evt_idx]
+        dist_deg_far_event = dist_deg_far[evt_idx]
 
-elif PICK_METHOD == "stalta":
-    nsta = int(STA * st_win.stats.sampling_rate)
-    nlta = int(LTA * st_win.stats.sampling_rate)
-    cft = classic_sta_lta(st_win.data, nsta, nlta)
-    on_off = trigger_onset(cft, TRIGGER_ON, TRIGGER_OFF)
-    if len(on_off) == 0:
-        print(f"[Warning] No trigger found for {evt_idx}")  
-        # return None
-    trigger_sample = on_off[0][0]
-    t_obs = st_win.stats.starttime + trigger_sample / st_win.stats.sampling_rate
+        arrivals_close = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_close_event, phase_list=["P"])
+        arrivals_far = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg_far_event, phase_list=["S"])
 
-elif PICK_METHOD == "random":
-    t_obs = UTCDateTime(np.random.uniform(st_win[0].stats.starttime, st_win[0].stats.endtime))
+        if not arrivals_close:
+            t_pred_start = origin_times[evt_idx]
+        else:
+            t_pred_start = origin_times[evt_idx] + arrivals_close[0].time
 
-elif PICK_METHOD == "svd":
-    sr = st_win[0].stats.sampling_rate
-    z = st_win.select(component="Z")[0].data
-    n = st_win.select(component="1")[0].data
-    e = st_win.select(component="2")[0].data
-    times = st_win[0].times("utcdatetime")
+        if not arrivals_far:
+            print(f"[Warning] No arrivals far found for event {evt_idx}")
+            return
 
-    win_len = int(0.2 * sr)
-    step = int(0.05 * sr)
-    threshold = 0.8
+        t_pred_end = origin_times[evt_idx] + arrivals_far[0].time
 
-    best_p = None
-    best_s = None
+        st_win = st.copy().trim(starttime=t_pred_start - pick_before, endtime=t_pred_end + pick_after)
+        st_win.filter("bandpass", freqmin=FILTER[0], freqmax=FILTER[1], corners=4, zerophase=True)
+        st_win.trim(starttime=t_pred_start - pick_before + filter_buffer, endtime=t_pred_end + pick_after)
 
-    for i in range(0, len(z) - win_len, step):
-        z_win = z[i:i + win_len]
-        n_win = n[i:i + win_len]
-        e_win = e[i:i + win_len]
-        M = np.vstack([z_win, n_win, e_win])
-        U, S, Vt = np.linalg.svd(M, full_matrices=False)
-        linearity = S[0] / np.sum(S)
-        if linearity < threshold:
-            continue
+        st_win.write(f"picks/waveforms/event_{evt_idx:03d}.mseed", format="MSEED")
 
-        vec = np.abs(U[:, 0])
-        dominant = np.argmax(vec)
-        if dominant == 0 and best_p is None:
-            best_p = times[i]
-        elif dominant in [1, 2] and best_s is None:
-            best_s = times[i]
+        times_paz, rect, incidence = compute_polarization_manual(st_win)
 
-        if best_p and best_s:
-            break
+        trZ = st_win.select(component="Z")[0]
+        trN = st_win.select(component="1")[0]
+        trE = st_win.select(component="2")[0]
 
-    if best_p is None:
-        print(f"[Warning] No P-wave found via SVD for {evt_idx}")
-        # return None
+        p_pick, s_pick = plot_polarization_result(
+            trZ=trZ,
+            trN=trN,
+            trE=trE,
+            times_paz=times_paz,
+            rect=rect,
+            incidence=incidence,
+            rect_thresh=0.7,
+            p_incidence_max=30,
+            s_incidence_min=45,
+            amp_thresh=0.01,
+            p_pick_search_start=5.0,
+            filename=f"picks/polarization/polarization_output_event_{evt_idx:03d}.png",
+            show_plot=False,
+            true_p_arrival=P_arrival_times[evt_idx],
+            true_s_arrival=S_arrival_times[evt_idx]
+        )
+    except Exception as e:
+        print(f"[Error] Failed processing event {evt_idx}: {e}")
 
-    t_obs = best_p  # prioritize P-pick
 
-else:
-    print("Invalid PICK_METHOD")
-    # return None
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-dist_deg = locations2degrees(event_lats[evt_idx], event_lons[evt_idx], inv[0][0].latitude, inv[0][0].longitude)
-arrivals = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg, phase_list=["P"])
-if not arrivals:
-    print(f"[Warning] No arrivals found for {evt_idx}")
-    # return None
-t_pred = origin_times[evt_idx] + arrivals[0].time
+with ProcessPoolExecutor(max_workers=N_WORKERS) as executor:
+    futures = [executor.submit(process_segment_and_polarization, evt_idx) for evt_idx in range(len(cat))]
+    for f in tqdm(as_completed(futures), total=len(cat), desc="Processing segments"):
+        _ = f.result()  # Optional: collect result if you modify function to return something
+
 
 # ========================================================================== 80
-# Run polarization analysis
-times_paz, rect, incidence = compute_polarization_manual(st_win)
-
-# Grab the Z trace
-trZ = st_win.select(component="Z")[0]
-trN = st_win.select(component="1")[0]
-trE = st_win.select(component="2")[0]
+true_lon = inv[0][0].longitude
+true_lat = inv[0][0].latitude
+true_elv = inv[0][0].elevation / 1000  # Convert
 
 
-# Run the plotting function
-p_pick, s_pick = plot_polarization_result(
-    trZ=trZ,
-    trN=trN,
-    trE=trE,
-    times_paz=times_paz,
-    rect=rect,
-    incidence=incidence,
-    rect_thresh=0.7,
-    p_incidence_max=30,
-    s_incidence_min=45,
-    amp_thresh=0.01,
-    p_pick_search_start=5.0,
-    filename="polarization_output.png",
-    show_plot=True,
-    true_p_arrival=P_arrival_times[evt_idx],
-    true_s_arrival=S_arrival_times[evt_idx]
+# === GMT Mercator Map ===
+print("Plotting GMT Mercator map...")
+lat_min_data = min(event_lats ) - 2
+lat_max_data = max(event_lats ) + 2
+lon_min_data = min(event_lons ) - 2
+lon_max_data = max(event_lons ) + 2
+
+lat_min_input, lat_max_input = LAT_RANGE
+lon_min_input, lon_max_input = LON_RANGE
+
+lat_min = min(lat_min_data, lat_min_input)
+lat_max = max(lat_max_data, lat_max_input)
+lon_min = min(lon_min_data, lon_min_input)
+lon_max = max(lon_max_data, lon_max_input)
+
+region = [lon_min, lon_max, lat_min, lat_max]
+
+
+fig = pygmt.Figure()
+fig.basemap(region=region, projection="M8i", frame=["af", f"+tStation Inversion: {STATION}"])
+fig.grdimage(grid="@earth_relief_01m", region=region, projection="M8i", shading=True)
+
+# Plot translucent grid box showing inversion search area
+fig.plot(
+    x=[LON_RANGE[0], LON_RANGE[1], LON_RANGE[1], LON_RANGE[0], LON_RANGE[0]],
+    y=[LAT_RANGE[0], LAT_RANGE[0], LAT_RANGE[1], LAT_RANGE[1], LAT_RANGE[0]],
+    pen="1p,gray",
+    transparency=70,
+    fill="white"
 )
 
-print(f"P-pick: {p_pick:.2f} s | S-pick: {s_pick:.2f} s")
+# Draw grid lines inside search area
+lon_ticks = np.arange(LON_RANGE[0], LON_RANGE[1] + 1e-5, 1.0)
+lat_ticks = np.arange(LAT_RANGE[0], LAT_RANGE[1] + 1e-5, 1.0)
+for lon in lon_ticks:
+    fig.plot(x=[lon, lon], y=[LAT_RANGE[0], LAT_RANGE[1]], pen="0.25p,gray,-")
+for lat in lat_ticks:
+    fig.plot(x=[LON_RANGE[0], LON_RANGE[1]], y=[lat, lat], pen="0.25p,gray,-")
+
+# Plot events and stations
+fig.plot(x=event_lons, y=event_lats, style="c0.15c", fill="blue", pen="black", label="Events")
+fig.plot(x=[true_lon], y=[true_lat], style="a0.3c", fill="green", pen="black", label="True Station")
+# fig.plot(x=[best_lon], y=[best_lat], style="x0.4c", fill="red", pen="black", label="Inverted Station")
+fig.plot(x=[LON_CEN], y=[LAT_CEN], style="t0.3c", fill="orange", pen="black", label="Initial Estimate")
+
+# Label each event with idx and magnitude
+for idx, (lon, lat, mag) in enumerate(zip(event_lons, event_lats, event_mags)):
+    fig.text(x=lon, y=lat, text=f"{idx} (M{mag:.1f})", font="8p,Helvetica-Bold,black", justify="CM")
+
+
+fig.legend(position="JBR+o0.2c", box=True)
+fig.savefig("station_mercator_map.png")
+print("Saved: station_mercator_map.png")
+
+
+# fig = pygmt.Figure()
+# fig.basemap(region=region, projection="M8i", frame=["af", f"+tStation Inversion: {STATION}"])
+# fig.grdimage(grid="@earth_relief_01m", region=region, projection="M8i", shading=True)
+
+# fig.plot(x=event_lons, y=event_lats, style="c0.15c", fill="blue", pen="black", label="Events")
+# fig.plot(x=[true_lon], y=[true_lat], style="a0.3c", fill="green", pen="black", label="True Station")
+# fig.plot(x=[best_lon], y=[best_lat], style="x0.4c", fill="red", pen="black", label="Inverted Station")
+# fig.plot(x=[LON_CEN], y=[LAT_CEN], style="t0.3c", fill="orange", pen="black", label="Initial Estimate")
+
+# for elat, elon in zip(event_lats, event_lons):
+#     fig.plot(data=[[elon, elat], [best_lon, best_lat]], pen="0.3p,gray,-")
+
+# station_code = f"{NETWORK}.{STATION}"
+# fig.text(x=true_lon, y=true_lat, text=f"{station_code} (true)", font="8p,Helvetica-Bold,green", justify="TR", offset="0.2c/0.2c")
+# fig.text(x=best_lon, y=best_lat, text="Inverted", font="8p,Helvetica-Bold,red", justify="BL", offset="0.2c/0.2c")
+# fig.text(x=LON_CEN, y=LAT_CEN, text="Initial", font="8p,Helvetica-Bold,orange", justify="TL", offset="0.2c/0.2c")
+
+# misfit_km = np.sqrt((best_lat - true_lat)**2 + (best_lon - true_lon)**2 + (best_z - true_elv)**2)
+# fig.text(x=lon_min + 0.5, y=lat_min + 0.5,
+#          text=f"Misfit: {misfit_km:.2f}°",
+#          font="10p,Helvetica-Bold,black", justify="BL", offset="0.1c/0.1c")
+
+# fig.legend(position="JBR+o0.2c", box=True)
+# fig.savefig("station_mercator_map.png")
+# print("Saved: station_mercator_map.png")
+
+
+
+
+
+
+
+
+
+
+
+
+
+# # ========================================================================== 80
+# # Picking
+# # evt_idx = 8
+
+
+# if len(st_win[0].data) < 10:
+#     print(f"[Warning] Data too short for {evt_idx}")
+#     # return None
+
+# # if PICK_METHOD == "stalta":
+# #     st_win.filter("bandpass", freqmin=FILTER[0], freqmax=FILTER[1], corners=4, zerophase=True)
+
+
+
+# if PICK_METHOD == "hilbert":
+#     abs_env = np.abs(hilbert(st_win[0].data))
+#     peak_idx = np.argmax(abs_env)
+#     if not peak_idx:
+#         print(f"[Warning] No peak found for {evt_idx}")
+#         # return None
+#     t_obs = st_win.stats.starttime + peak_idx / st_win.stats.sampling_rate
+
+# elif PICK_METHOD == "stalta":
+#     nsta = int(STA * st_win.stats.sampling_rate)
+#     nlta = int(LTA * st_win.stats.sampling_rate)
+#     cft = classic_sta_lta(st_win.data, nsta, nlta)
+#     on_off = trigger_onset(cft, TRIGGER_ON, TRIGGER_OFF)
+#     if len(on_off) == 0:
+#         print(f"[Warning] No trigger found for {evt_idx}")  
+#         # return None
+#     trigger_sample = on_off[0][0]
+#     t_obs = st_win.stats.starttime + trigger_sample / st_win.stats.sampling_rate
+
+# elif PICK_METHOD == "random":
+#     t_obs = UTCDateTime(np.random.uniform(st_win[0].stats.starttime, st_win[0].stats.endtime))
+
+# elif PICK_METHOD == "svd":
+#     sr = st_win[0].stats.sampling_rate
+#     z = st_win.select(component="Z")[0].data
+#     n = st_win.select(component="1")[0].data
+#     e = st_win.select(component="2")[0].data
+#     times = st_win[0].times("utcdatetime")
+
+#     win_len = int(0.2 * sr)
+#     step = int(0.05 * sr)
+#     threshold = 0.8
+
+#     best_p = None
+#     best_s = None
+
+#     for i in range(0, len(z) - win_len, step):
+#         z_win = z[i:i + win_len]
+#         n_win = n[i:i + win_len]
+#         e_win = e[i:i + win_len]
+#         M = np.vstack([z_win, n_win, e_win])
+#         U, S, Vt = np.linalg.svd(M, full_matrices=False)
+#         linearity = S[0] / np.sum(S)
+#         if linearity < threshold:
+#             continue
+
+#         vec = np.abs(U[:, 0])
+#         dominant = np.argmax(vec)
+#         if dominant == 0 and best_p is None:
+#             best_p = times[i]
+#         elif dominant in [1, 2] and best_s is None:
+#             best_s = times[i]
+
+#         if best_p and best_s:
+#             break
+
+#     if best_p is None:
+#         print(f"[Warning] No P-wave found via SVD for {evt_idx}")
+#         # return None
+
+#     t_obs = best_p  # prioritize P-pick
+
+# else:
+#     print("Invalid PICK_METHOD")
+#     # return None
+
+# dist_deg = locations2degrees(event_lats[evt_idx], event_lons[evt_idx], inv[0][0].latitude, inv[0][0].longitude)
+# arrivals = model.get_travel_times(source_depth_in_km=event_depths[evt_idx], distance_in_degree=dist_deg, phase_list=["P"])
+# if not arrivals:
+#     print(f"[Warning] No arrivals found for {evt_idx}")
+#     # return None
+# t_pred = origin_times[evt_idx] + arrivals[0].time
+
+# # ========================================================================== 80
+# # Run polarization analysis
+# times_paz, rect, incidence = compute_polarization_manual(st_win)
+
+# # Grab the Z trace
+# trZ = st_win.select(component="Z")[0]
+# trN = st_win.select(component="1")[0]
+# trE = st_win.select(component="2")[0]
+
+
+# # Run the plotting function
+# p_pick, s_pick = plot_polarization_result(
+#     trZ=trZ,
+#     trN=trN,
+#     trE=trE,
+#     times_paz=times_paz,
+#     rect=rect,
+#     incidence=incidence,
+#     rect_thresh=0.7,
+#     p_incidence_max=30,
+#     s_incidence_min=45,
+#     amp_thresh=0.01,
+#     p_pick_search_start=5.0,
+#     filename="polarization_output.png",
+#     show_plot=False,
+#     true_p_arrival=P_arrival_times[evt_idx],
+#     true_s_arrival=S_arrival_times[evt_idx]
+# )
+
+# print(f"P-pick: {p_pick:.2f} s | S-pick: {s_pick:.2f} s")
 
 
 
